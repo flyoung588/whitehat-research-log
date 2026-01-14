@@ -1,0 +1,124 @@
+# Delegatecall-Based Strategy Storage Collision
+
+**Category:** Rule-Level Smart Contract Failure Pattern
+**Author:** Invaribreak
+
+---
+
+## Summary
+
+This report documents a **critical architectural vulnerability** caused by using `delegatecall` to external strategy contracts **while the caller contract maintains its own state via inheritance**.
+The design creates a high-risk **storage collision vector**, where a legitimate strategy implementation can unintentionally overwrite critical control variables of the caller contract, leading to **permanent fund freezing or irreversible loss of governance control**.
+
+---
+
+## Vulnerability Pattern
+
+### Core Issue
+
+The vulnerable contract delegates execution to an external strategy contract using `delegatecall`, while simultaneously holding its own storage layout composed of multiple inherited modules such as:
+
+* Initialization logic
+* Pause control
+* Ownership / access control
+* Core protocol configuration
+
+Because `delegatecall` executes code **in the storage context of the caller**, any state writes performed by the strategy will target the caller’s storage slots.
+
+---
+
+## Failure Mechanism
+
+### Storage Layout Collision
+
+A common strategy implementation typically declares its own state variables starting from **Storage Slot 0**, such as:
+
+* `totalDeposited`
+* `totalInvested`
+* `totalShares`
+
+When such a strategy is connected and invoked via `delegatecall`, any write to its first declared variable will **physically overwrite Slot 0 of the caller contract**.
+
+However, Slot 0 of the caller often contains **critical packed variables**, such as:
+
+* Pause flags
+* Owner address
+* Initialization status
+
+This creates a deterministic corruption path.
+
+---
+
+## Impact Analysis
+
+### 1. Permanent Protocol Freeze
+
+If the collision flips or corrupts the pause flag, all user-facing functions guarded by `whenNotPaused` become permanently inaccessible.
+
+### 2. Irrecoverable Loss of Privileges
+
+If the owner address is overwritten, administrative control is lost forever. No upgrades, rescues, or emergency actions are possible.
+
+### 3. Cascading State Corruption
+
+Further writes may corrupt protocol configuration variables, including token addresses or strategy references, breaking all contract interactions.
+
+---
+
+## Why This Is Dangerous
+
+* The vulnerability **does not require a malicious strategy**
+* A *standard, well-intentioned* strategy implementation is sufficient
+* The failure is triggered during normal user operations
+* Governance actions unintentionally activate the failure
+
+This makes the issue particularly dangerous in production systems.
+
+---
+
+## Proof Concept (Abstracted)
+
+A standard strategy contract with a single state variable:
+
+* Declares `uint256 totalDeposited` as its first variable
+* Writes to it during deposit logic
+
+When called via `delegatecall`, this write corrupts the caller’s Slot 0, leading to irreversible state damage.
+
+---
+
+## Root Cause
+
+**Mixing `delegatecall` with independent stateful inheritance in the caller contract.**
+
+This pattern violates the fundamental invariant that delegated logic must share an identical and intentionally aligned storage layout with the caller.
+
+---
+
+## Recommended Mitigation
+
+* **Do not use `delegatecall` for strategy execution**
+* Use standard external calls instead
+* Ensure strategy contracts maintain **fully isolated storage**
+* If `delegatecall` is unavoidable, enforce strict storage layout alignment and explicit slot reservation
+
+---
+
+## Rule-Level Insight
+
+> **If a contract owns state, it must not delegate execution to arbitrary stateful logic.**
+>
+> Delegatecall is safe only when storage layouts are explicitly designed as a single system.
+
+---
+
+## Classification
+
+* Failure Type: Architectural / Rule-Level
+* Exploitability: High (Non-Malicious Trigger)
+* Severity: Critical
+* Affected Systems: Strategy-based DeFi Protocols
+
+---
+
+*This report is published for educational and defensive research purposes.*
